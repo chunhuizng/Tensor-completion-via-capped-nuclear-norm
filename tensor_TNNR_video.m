@@ -1,0 +1,161 @@
+%% add path
+addpath(genpath(cd))
+close all
+clear
+clc
+
+%% create files directory information
+admm_result = './result/admm/video';
+apgl_result = './result/apgl/video';
+if ~exist(admm_result, 'dir'),	mkdir(admm_result);	end
+if ~exist(apgl_result, 'dir'),  mkdir(apgl_result);	end
+
+%% parameter configuration
+image_id = 1;           % select an image for experiment
+mask_id  = 1;           % select a mask for experiment
+
+opts.block = 0;         % 1 for block occlusion, 0 for random noise
+opts.lost = 0.65;       % percentage of lost elements in matrix
+opts.save_eps = 0;      % save eps figure in result directory
+% it requires to test all ranks from min_R to max_R, note that different
+% images have different ranks, and various masks affect the ranks, too.
+
+opts.min_R = 1;         % minimum rank of chosen image 
+opts.max_R = 1;        % maximum rank of chosen image
+
+opts.out_iter = 2;     % !!!!!!!!!!!!!!!!!!!!!! outer iteration
+opts.out_tol = 1e-3;    % tolerance of outer iteration
+
+opts.mu = 6.5e-3;         % mu of ADMM optimization6.5e-3  #1e-6 #1e-3 #1e-2
+opts.rho = 1.15;%1.15;        % rho of ADMM optimization 1.15 #1.05 #1.25 #1.35
+%1.5 psnr=21.35 37s
+%1.2 psnr=22.50 61.35s
+%1.25 psnr=22.26 51.00s
+opts.max_mu = 1e10;     % max value of mu  10
+%5 70s
+%8 70s
+%9 69s
+%10 11
+opts.admm_iter = 200;   % !!!!!!!!!!!!!!S!!!!!!!!!!ADMM iteration
+opts.admm_tol = 1e-4;   % tolerance of ADMM 
+%iteration -5 -4 -3
+
+opts.lambda = 1e-2;     % lambda of APGL optimization
+opts.apgl_iter = 200;   % maximum number of APGL iteration
+opts.apgl_tol = 1e-4;   % tolerance of APGL iteration
+
+opts.maxP = 255;        % max pixel value
+
+%% load video data for experiment
+
+load('basketball.mat');
+X_full = basketball;
+min_X = min(X_full(:));
+max_X = max(X_full(:));
+X_full = opts.maxP * (X_full - min_X) / (max_X - min_X);
+
+[n1, n2, n3] = size(X_full);
+fprintf('use basketball video: %d x %d x %d ', n1, n2, n3);
+
+if opts.block  
+    % block occlusion
+    mask = double(imread(mask_list{mask_id}));
+    mask = mask ./ max(mask(:));       % index matrix of the known elements
+    fprintf('mask: %s.\n', mask_list{mask_id});
+    omega = find(mask);
+else
+    lost = opts.lost;
+    fprintf('loss: %d%% elements are randomly missing\n', lost*100);
+    mask = double(rand(n1,n2,n3) < (1-lost));
+    omega = find(mask);
+end
+
+M = zeros(n1, n2, n3);
+M(omega) = X_full(omega);
+max_P = opts.maxP;
+
+%% tensor truncated tensor nuclear norm, using ADMM
+fprintf('ADMM method to recover an image with missing pixels\n');
+opts.method = 'ADMM';
+
+t1 = tic;
+[X_hat, admm_res] = capped_tensor_tnnr(X_full, omega, opts);
+toc(t1)
+
+admm_R = admm_res.best_R;
+admm_psnr = admm_res.best_psnr;
+admm_erec = admm_res.best_erec;
+admm_time_cost = admm_res.time(admm_R);
+admm_iteration = admm_res.iterations(admm_R);
+admm_total_iter = admm_res.total_iter(admm_R);
+
+figure
+for i = 1 : n3
+    %disp([num2str(i) ' / ' num2str(n3)]);
+    subplot(2,2,1); imagesc(X_full(:,:,i)); axis off;
+    colormap(gray); title('original video');
+    subplot(2,2,2); imagesc(M(:,:,i))     ; axis off;
+    colormap(gray); title('incomplete video');
+    subplot(2,2,3); imagesc(X_hat(:,:,i)) ; axis off;
+    colormap(gray);title('recovered video');
+    pause(.2);
+end
+
+%% save eps figure in result directory
+
+fprintf('\ncapped Tensor TNNR (ADMM):\n');
+fprintf('theta=0.%d, psnr=%.4f, erec=%.4f, time=%.3f s, iteration=%d(%d)\n', ...
+    admm_R, admm_psnr, admm_erec, admm_time_cost, admm_iteration, ...
+    admm_total_iter);
+disp(' ');
+
+figure('NumberTitle', 'off', 'Name', 'Tensor TNNR (ADMM) result')
+subplot(2, 2, 1)
+plot(admm_res.R, admm_res.Psnr, 'o-')
+xlabel('theta*20^-2')
+%xlabel('theta*10^-2')
+ylabel('PSNR')
+
+subplot(2, 2, 2)
+plot(admm_res.R, admm_res.Erec, 'diamond-')
+xlabel('theta*20^-2')
+%xlabel('theta*10^-2')
+ylabel('Recovery error')
+
+subplot(2, 2, 3)
+plot(admm_res.Psnr_iter, 'square-')
+xlabel('Iteration')
+ylabel('PSNR')
+
+subplot(2, 2, 4)
+plot(admm_res.Erec_iter, '^-')
+xlabel('Iteration')
+ylabel('Recovery error')
+
+%% record test results
+outputFileName = fullfile(admm_result, 'parameters.txt'); 
+fid = fopen(outputFileName, 'a') ;
+fprintf(fid, '****** %s ******\n', datestr(now,0));
+% fprintf(fid, '%s\n', ['image: '           image_name               ]);
+% fprintf(fid, '%s\n', ['mask: '            mask_list{mask_id}       ]);
+fprintf(fid, '%s\n', ['block or noise: '  num2str(opts.block)      ]);
+fprintf(fid, '%s\n', ['loss ratio: '      num2str(opts.lost)       ]);
+fprintf(fid, '%s\n', ['save eps figure: ' num2str(opts.save_eps)   ]);
+fprintf(fid, '%s\n', ['min rank: '        num2str(opts.min_R)      ]);
+fprintf(fid, '%s\n', ['max rank: '        num2str(opts.max_R)      ]);
+fprintf(fid, '%s\n', ['max iteration: '   num2str(opts.out_iter)   ]);
+fprintf(fid, '%s\n', ['tolerance: '       num2str(opts.out_tol)    ]);
+fprintf(fid, '%s\n', ['ADMM mu: '         num2str(opts.mu)         ]);
+fprintf(fid, '%s\n', ['ADMM rho: '        num2str(opts.rho)        ]);
+fprintf(fid, '%s\n', ['ADMM max_mu: '     num2str(opts.max_mu)     ]);
+fprintf(fid, '%s\n', ['ADMM iteration: '  num2str(opts.admm_iter)  ]);
+fprintf(fid, '%s\n', ['ADMM tolerance: '  num2str(opts.admm_tol)   ]);
+fprintf(fid, '%s\n', ['max pixel value: ' num2str(opts.maxP)       ]);
+
+fprintf(fid, '%s\n', ['rank: '            num2str(admm_R)       ]);
+fprintf(fid, '%s\n', ['psnr: '            num2str(admm_psnr)       ]);
+fprintf(fid, '%s\n', ['recovery error: '  num2str(admm_erec)       ]);
+fprintf(fid, '%s\n', ['time cost: '       num2str(admm_time_cost)  ]);
+fprintf(fid, 'iteration: %d(%d)\n',       admm_iteration, admm_total_iter);
+fprintf(fid, '--------------------\n');
+fclose(fid);
